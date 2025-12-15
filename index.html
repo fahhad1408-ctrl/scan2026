@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>أداة فحص الموقع (GPS + VPN)</title>
+    <style>
+        /* التنسيق العام والاحترافي */
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f0f2f5;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        .container {
+            max-width: 650px;
+            margin: 40px auto;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+        }
+        h2 {
+            color: #0056b3;
+            margin-bottom: 25px;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+
+        /* رسالة التوجيه */
+        .instruction {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: right;
+            line-height: 1.6;
+        }
+        .instruction strong {
+            color: #dc3545;
+        }
+
+        /* زر الفحص */
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s, transform 0.1s;
+            margin-bottom: 30px;
+            font-weight: bold;
+        }
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* صندوق نتائج الحالة */
+        #status {
+            font-size: 1.6em; /* زيادة حجم الخط */
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+
+        /* فئات الألوان للنتائج */
+        .safe { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .suspicious { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .critical { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background-color: #cce5ff; color: #004085; border: 1px solid #b8daff; }
+
+        /* منطقة تفاصيل الفحص */
+        #details {
+            text-align: right;
+            border-top: 1px dashed #ccc;
+            padding-top: 15px;
+            line-height: 1.8;
+            font-size: 0.95em;
+        }
+        #details strong {
+            color: #007bff;
+            display: inline-block;
+            min-width: 200px; /* زيادة العرض للوضوح */
+        }
+
+        /* شريط التقدم */
+        .progress-bar-container {
+            height: 25px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #28a745;
+            transition: width 0.5s ease-in-out;
+            text-align: center;
+            color: white;
+            line-height: 25px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>نظام الفحص الأمني المتقدم للموقع</h2>
+
+        <div class="instruction">
+            <p> لإتمام عملية التحقق الشاملة (GPS و VPN)، يجب عليك **الموافقة على مشاركة الموقع** عندما يطلب منك المتصفح ذلك.</p>
+            <p><strong>الرجاء الضغط على "السماح" في النافذة المنبثقة ثلاث مرات متتالية.</strong></p>
+        </div>
+
+        <button id="scanButton" onclick="startMultiCheck()">البدء في فحص الجوال</button>
+        
+        <div class="progress-bar-container">
+            <div id="progressBar" class="progress-bar">انتظار الفحص</div>
+        </div>
+        
+        <div id="status" class="info">يجب الموافقة على مشاركة الموقع لاتخاذ قراءة دقيقة.</div>
+        
+        <div id="details">
+            <p><strong>الإحداثيات (المستشعرات):</strong> --</p>
+            <p><strong>الإحداثيات (الشبكة IP):</strong> --</p>
+            <p><strong>الدقة المُبلّغ عنها:</strong> --</p>
+            <p><strong>مصدر الموقع المُستدَل:</strong> --</p>
+            <p><strong>تناقض IP/GPS:</strong> --</p>
+        </div>
+    </div>
+
+    <script>
+        let lastPosition = null;
+        let attemptCount = 0;
+        let ipLocation = null; // سيحمل بيانات الموقع المستند إلى IP
+        
+        const MAX_ATTEMPTS = 3;
+        const SCAN_INTERVAL_MS = 2000;
+        
+        // --- ثوابت الكشف ---
+        const PERFECT_ACCURACY_THRESHOLD = 5; 
+        const FAIL_ACCURACY_THRESHOLD = 50000; 
+        const SUSPICIOUS_SPEED_KMH = 400; 
+        const VPN_DISCREPANCY_THRESHOLD_KM = 50; // تناقض 50 كم بين IP و GPS يعتبر اشتباه VPN
+
+        // دالة مساعدة لحساب المسافة
+        function deg2rad(deg) { return deg * (Math.PI / 180); }
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; 
+            const dLat = deg2rad(lat2 - lat1);
+            const dLon = deg2rad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c; 
+        }
+
+        function inferLocationSource(accuracy) {
+            if (accuracy <= 10) {
+                return "GPS عالي الدقة (أقمار صناعية)";
+            } else if (accuracy <= 100) {
+                return "Wi-Fi أو GPS المساعد";
+            } else if (accuracy <= 5000) {
+                return "شبكة الجوال (Cell ID)";
+            } else {
+                return "غير معروف / فشل تحديد دقيق";
+            }
+        }
+
+        function updateScreen(message, className, details, progress) {
+            document.getElementById('status').innerHTML = message;
+            document.getElementById('status').className = 'result ' + className;
+            document.getElementById('details').innerHTML = details;
+            
+            document.getElementById('progressBar').style.width = progress + '%';
+            document.getElementById('progressBar').innerHTML = `جاري الفحص... ${progress}%`;
+            
+            if (progress === 100) {
+                document.getElementById('progressBar').innerHTML = "اكتمل الفحص";
+            }
+        }
+
+        function handleError(error) {
+            const detailsHTML = `<p><strong>رمز الخطأ:</strong> ${error.code}</p><p><strong>رسالة الخطأ:</strong> تم رفض الإذن أو انتهت المهلة.</p>`;
+            updateScreen("🔴 فشل الفحص: يجب الموافقة على مشاركة الموقع ثلاث مرات لإتمام التحقق.", 'critical', detailsHTML, (attemptCount / MAX_ATTEMPTS) * 100);
+            document.getElementById('scanButton').disabled = false;
+        }
+        
+        // --- (جديد) جلب موقع IP ---
+        async function getIPLocation() {
+            try {
+                // استخدام خدمة IP-API البسيطة لتحديد الموقع من عنوان IP
+                const response = await fetch('https://ip-api.com/json/');
+                const data = await response.json();
+                
+                if (data.status === 'success' && data.lat && data.lon) {
+                    return {
+                        lat: data.lat,
+                        lon: data.lon,
+                        city: data.city,
+                        country: data.country
+                    };
+                } else {
+                    console.error("IP API failed:", data.message || data.status);
+                    return null;
+                }
+            } catch (error) {
+                console.error("Error fetching IP location:", error);
+                return null;
+            }
+        }
+
+
+        // --- وظائف الكشف والنتائج ---
+        function checkResult(position) {
+            const acc = position.coords.accuracy;
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            const timestamp = position.timestamp;
+
+            let checkMessage = `🟢 القراءة ${attemptCount}: يبدو الموقع طبيعياً.`;
+            let checkClass = 'safe';
+            let speedMessage = '--';
+            let timeDiff = '--';
+            let speedKmh = 0;
+            let isSpoofingDetected = false;
+            let distanceKm = 0;
+
+            // 1. فحص السرعة
+            if (lastPosition && attemptCount > 1) {
+                timeDiff = (timestamp - lastPosition.timestamp) / 1000;
+                const distKm = getDistance(lastPosition.coords.latitude, lastPosition.coords.longitude, lat, lon);
+                speedKmh = distKm / (timeDiff / 3600); 
+
+                if (speedKmh > SUSPICIOUS_SPEED_KMH && timeDiff > 1) {
+                    checkMessage = `🔴 **تنبيه حاسم (تزييف GPS):** تم الكشف عن انتقال غير منطقي (${speedKmh.toFixed(0)} كم/ساعة)!`;
+                    checkClass = 'critical';
+                    isSpoofingDetected = true;
+                }
+                speedMessage = `${speedKmh.toFixed(0)} كم/ساعة`;
+            }
+
+            // 2. فحص الدقة (تزييف GPS)
+            if (acc < PERFECT_ACCURACY_THRESHOLD) {
+                checkMessage = `🔴 **تنبيه حاسم (تزييف GPS):** دقة الموقع مثالية بشكل مريب (${acc.toFixed(2)} متر).`;
+                checkClass = 'critical';
+                isSpoofingDetected = true;
+            } else if (acc > FAIL_ACCURACY_THRESHOLD) {
+                 checkMessage = `🟡 فشل في تحديد الموقع بدقة. (الدقة: ${(acc / 1000).toFixed(0)} كم).`;
+                 checkClass = 'suspicious';
+            }
+            
+            // 3. (جديد) فحص تناقض IP/GPS (كشف VPN)
+            if (ipLocation && acc < FAIL_ACCURACY_THRESHOLD) { // نفحص VPN فقط إذا كانت قراءة GPS معقولة
+                const gpsLat = lat;
+                const gpsLon = lon;
+                distanceKm = getDistance(gpsLat, gpsLon, ipLocation.lat, ipLocation.lon);
+
+                if (distanceKm > VPN_DISCREPANCY_THRESHOLD_KM) {
+                    checkMessage = `🔴 **تنبيه حاسم (VPN/Proxy):** الموقع المستند إلى الشبكة (IP) يختلف عن موقع المستشعرات الحقيقي بـ ${distanceKm.toFixed(0)} كم.`;
+                    checkClass = 'critical';
+                    isSpoofingDetected = true;
+                }
+            }
+
+
+            // تحديث التفاصيل
+            const ipLat = ipLocation ? ipLocation.lat.toFixed(5) : '--';
+            const ipLon = ipLocation ? ipLocation.lon.toFixed(5) : '--';
+
+            const detailsHTML = `
+                <p><strong>الإحداثيات (المستشعرات):</strong> ${lat.toFixed(5)}, ${lon.toFixed(5)}</p>
+                <p><strong>الإحداثيات (الشبكة IP):</strong> ${ipLat}, ${ipLon}</p>
+                <p><strong>الدقة المُبلّغ عنها:</strong> ${acc.toFixed(2)} متر</p>
+                <p><strong>مصدر الموقع المُستدَل:</strong> ${inferLocationSource(acc)}</p>
+                <p><strong>السرعة المُقدَّرة:</strong> ${speedMessage}</p>
+                <p><strong>تناقض IP/GPS:</strong> ${distanceKm > 0 ? distanceKm.toFixed(0) + ' كم' : '--'}</p>
+            `;
+
+            lastPosition = position;
+            return { message: checkMessage, className: checkClass, detailsHTML: detailsHTML, isSpoofingDetected: isSpoofingDetected };
+        }
+
+        // --- إدارة الفحص المتعدد (تم تعديلها لتكون غير متزامنة) ---
+        async function startMultiCheck() {
+            document.getElementById('scanButton').disabled = true;
+            attemptCount = 0;
+            lastPosition = null;
+            
+            // 1. جلب موقع IP أولاً
+            updateScreen("جاري التحقق من عنوان IP وموقع الشبكة...", 'info', `<p><strong>الحالة:</strong> جاري الاتصال بخدمات الموقع الجغرافي للشبكة.</p>`, 5);
+            ipLocation = await getIPLocation();
+
+            if (!ipLocation) {
+                updateScreen("🔴 فشل التحقق من IP: يرجى التأكد من اتصالك بالإنترنت.", 'critical', '<p><strong>الحالة:</strong> فشل في الاتصال بخدمة الموقع الجغرافي للشبكة.</p>', 100);
+                document.getElementById('scanButton').disabled = false;
+                return;
+            }
+            
+            // 2. البدء في فحص المستشعرات (GPS)
+            runNextCheck(); 
+        }
+
+        function runNextCheck() {
+            if (attemptCount >= MAX_ATTEMPTS) {
+                document.getElementById('scanButton').disabled = false;
+                return;
+            }
+
+            attemptCount++;
+            const progress = (attemptCount / MAX_ATTEMPTS) * 100;
+            const initialMessage = `جاري فحص المستشعرات... (المحاولة ${attemptCount} من ${MAX_ATTEMPTS})`;
+            
+            updateScreen(initialMessage, 'info', `<p><strong>الحالة:</strong> يرجى الموافقة على الإذن رقم ${attemptCount} في النافذة المنبثقة...</p>`, progress - (100/MAX_ATTEMPTS)/2);
+
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const result = checkResult(position);
+                    
+                    if (result.isSpoofingDetected) {
+                        updateScreen(`🔴 نتيجة الفحص النهائية: ${result.message}`, 'critical', result.detailsHTML, 100);
+                        document.getElementById('scanButton').disabled = false;
+                        return;
+                    }
+
+                    updateScreen(result.message, result.className, result.detailsHTML, progress);
+
+                    setTimeout(runNextCheck, SCAN_INTERVAL_MS);
+
+                    if (attemptCount === MAX_ATTEMPTS) {
+                        updateScreen("✅ الفحص الشامل اكتمل. جهازك آمن ولا يوجد تزييف GPS أو VPN.", 'safe', result.detailsHTML, 100);
+                    }
+                },
+                handleError,
+                { enableHighAccuracy: true, timeout: 7000, maximumAge: 0 }
+            );
+        }
+
+    </script>
+</body>
+</html>
